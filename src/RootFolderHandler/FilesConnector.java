@@ -6,21 +6,31 @@ import java.nio.file.Paths;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.StringJoiner;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+/**
+ * Класс, в котором выполняется поиск файлов дирекории, создает граф из списка путей,
+ * выполняется построение зависимостей между файлолами с помощью наличия "require".
+ */
 public class FilesConnector {
 
-    private final Path pathDirectory;
-    private int countFiles;
-    private List<List<Integer>> graphFilesPaths;
+    private final Path pathDirectory; // директория с необходимыми файлами.
+    private final int countFiles; // количество файлов, найденных в директории.
+    private List<List<Integer>> graphFilesPaths; // Представление путей файлов в виде графа.
 
-    private List<Path> directoryFiles;
-    private static final String REGULAR_EXPRESSION_FOR_FILE_PATH = "(require ‘)(.*?)(’)";
-    private int firstIndexOfCycleGraph;
-    private int lastIndexOfCycleGraph;
+    private final List<Path> directoryFiles; // список файлов в каталогах и подкаьалогах, найденных в корневой папке.
+
+    private static final String REGULAR_EXPRESSION_FOR_FILE_PATH = "(require ‘)(.*?)(’)"; // Регулярное выражения для поиска в файлах "require".
+
+    /**
+     * Выполняет поиск в каталогах и подкаталогах всех файлов в заданной корневой папке,
+     * проверяет наличие циклической зависимости, выводит в консоль список для конктреного файла, необходимых файлов.
+     * @param rootFolderPath Корневая папка, необходимая для поиска файлов.
+     */
 
     public FilesConnector(String rootFolderPath) {
         pathDirectory = Paths.get(rootFolderPath);
@@ -33,6 +43,36 @@ public class FilesConnector {
         } catch (IOException e) {
             throw new RuntimeException(e.getMessage());
         }
+        makeGraphFromList();
+        List<Integer> cyclicDependenciesFiles = WorkWithFileDependencies.findFileDependencies(countFiles, graphFilesPaths);
+
+        // Проверка на наличие циклической зависимости
+        if (!cyclicDependenciesFiles.isEmpty()) {
+            StringJoiner errorCycleDependence = new StringJoiner("\n");
+            errorCycleDependence.add("Найден цикл в зависимостях, из-за чего невозможно соединить файлы. Цикл файлов:");
+            cyclicDependenciesFiles.forEach((i) -> errorCycleDependence.add(directoryFiles.get(i).toString()));
+            throw new RuntimeException(errorCycleDependence.toString());
+        }
+        WorkWithResult.writeResultInFile(SortingGraph.startSortingGraph(countFiles, graphFilesPaths), pathDirectory,directoryFiles );
+
+        // Вывод в консоль список файлов
+        for (Path path : directoryFiles) {
+            try {
+                System.out.printf("Необходимо для файла %s :\n", path.toString());
+                findRequirePathsInFile(path).forEach(System.out::println);
+                System.out.println("\n");
+
+            } catch (IOException e) {
+                throw new RuntimeException("Возникли проблемы с отрытием файла.");
+            }
+        }
+    }
+
+    /** Формируется граф из списка путей файлов корневой папки.
+     * Граф создается таким образом, что каждое число является
+     * индексом пути файла из  полученного списка directoryFiles.
+     */
+    private void makeGraphFromList() {
         graphFilesPaths = new ArrayList<>();
         for (int way = 0; way < countFiles; ++way) {
             List<Path> pathToFile;
@@ -46,9 +86,13 @@ public class FilesConnector {
                 graphFilesPaths.get(way).add(directoryFiles.indexOf(path));
             }
         }
-        List<Integer> cyclicDependenciesFiles = findFileDependencies(countFiles);
     }
 
+    /**
+     * Происходит поиск файлов в корневой папке.
+     * @return                  Список, содержащий пути до всех найденных файлов.
+     * @throws IOException      в случае, если происходит ошибка при попытке поиска файлоа.
+     */
     private List<Path> getFiles() throws IOException {
         List<Path> listFilePaths;
         try (Stream<Path> walk = Files.walk(pathDirectory)) {
@@ -59,6 +103,12 @@ public class FilesConnector {
         return listFilePaths;
     }
 
+    /**
+     * Осуществляет обработку и проверку наличия файлов с "require".
+     * @param pathFileWithRequire   путь к файлу для поиска "require".
+     * @return                      Список путей к необходимым файлам корневой папки.
+     * @throws IOException          если происходит ошибка открытия файла.
+     */
     private List<Path> findRequirePathsInFile(Path pathFileWithRequire) throws IOException {
         List<Path> allPathsInRequire = new ArrayList<>();
         String fileData = new String(Files.readAllBytes(pathFileWithRequire));
@@ -74,50 +124,5 @@ public class FilesConnector {
         return allPathsInRequire;
     }
 
-    public List<Integer> findFileDependencies(int countPathsFiles) {
-        int[] metNodes = new int[countPathsFiles];
-        int[] arrayOfNodesForCycle = new int[countPathsFiles];
-        firstIndexOfCycleGraph = -1;
-        for (int i = 0; i < countPathsFiles; ++i) {
-            metNodes[i] = 0;
-            arrayOfNodesForCycle[i] = -1;
-        }
-        for (int curNode = 0; curNode < countPathsFiles; ++curNode) {
-            if (isCyclicalDependence(curNode, metNodes, arrayOfNodesForCycle)) {
-                break;
-            }
-        }
-        if (firstIndexOfCycleGraph != -1) {
-            List<Integer> listOfIndex = new ArrayList<>();
-            listOfIndex.add(firstIndexOfCycleGraph);
-            for (int i = lastIndexOfCycleGraph; i != firstIndexOfCycleGraph; i = arrayOfNodesForCycle[i]) {
-                listOfIndex.add(i);
-            }
-            listOfIndex.add(firstIndexOfCycleGraph);
-            return listOfIndex;
-        }
-        return new ArrayList<>();
-    }
-
-    private boolean isCyclicalDependence(int currentNode, int[] metNodes, int[] arrayOfNodesForCycle) {
-        metNodes[currentNode] = 1;
-        for (int i = 0; i < graphFilesPaths.get(currentNode).size(); ++i) {
-            int nextNode = graphFilesPaths.get(currentNode).get(i);
-            if (metNodes[nextNode]== 0) {
-                arrayOfNodesForCycle[nextNode] = currentNode;
-                if (isCyclicalDependence(nextNode, metNodes, arrayOfNodesForCycle)) {
-                    return true;
-                }
-            }else {
-                if (metNodes[nextNode] == 1) {
-                    firstIndexOfCycleGraph = nextNode;
-                    lastIndexOfCycleGraph = currentNode;
-                    return true;
-                }
-            }
-        }
-        metNodes[currentNode] = 2;
-        return false;
-    }
 
 }
